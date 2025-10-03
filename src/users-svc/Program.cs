@@ -84,50 +84,50 @@ builder.Services.AddSingleton(sp =>
 });
 
 // -------- JWT --------
-//var jwtSecret = FirstNonEmpty(
-//    useSsm ? TryGetSsm("/fcg/JWT_SECRET") : null,
-//    configuration["JwtOptions:Key"],
-//    TryGetSsm("/fcg/JWT_SECRET")
-//);
+var jwtSecret = FirstNonEmpty(
+    useSsm ? TryGetSsm("/fcg/JWT_SECRET") : null,
+    configuration["JwtOptions:Key"],
+    TryGetSsm("/fcg/JWT_SECRET")
+);
 
-//if (string.IsNullOrWhiteSpace(jwtSecret))
-//    throw new InvalidOperationException("JWT secret not found (SSM /fcg/JWT_SECRET or Jwt:Key).");
+if (string.IsNullOrWhiteSpace(jwtSecret))
+    throw new InvalidOperationException("JWT secret not found (SSM /fcg/JWT_SECRET or Jwt:Key).");
 
-//var jwtIssuer = FirstNonEmpty(
-//    useSsm ? TryGetSsm("/fcg/JWT_ISS", decrypt: false) : null,
-//    configuration["JwtOptions:Issuer"],
-//    TryGetSsm("/fcg/JWT_ISS", decrypt: false)
-//);
+var jwtIssuer = FirstNonEmpty(
+    useSsm ? TryGetSsm("/fcg/JWT_ISS", decrypt: false) : null,
+    configuration["JwtOptions:Issuer"],
+    TryGetSsm("/fcg/JWT_ISS", decrypt: false)
+);
 
-//var jwtAudience = FirstNonEmpty(
-//    useSsm ? TryGetSsm("/fcg/JWT_AUD", decrypt: false) : null,
-//    configuration["JwtOptions:Audience"],
-//    TryGetSsm("/fcg/JWT_AUD", decrypt: false)
-//);
+var jwtAudience = FirstNonEmpty(
+    useSsm ? TryGetSsm("/fcg/JWT_AUD", decrypt: false) : null,
+    configuration["JwtOptions:Audience"],
+    TryGetSsm("/fcg/JWT_AUD", decrypt: false)
+);
 
-//var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
+var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
 
-//builder.Services
-//    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-//    .AddJwtBearer(options =>
-//    {
-//        options.TokenValidationParameters = new TokenValidationParameters
-//        {
-//            ValidateIssuerSigningKey = true,
-//            IssuerSigningKey = signingKey,
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = signingKey,
 
-//            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
-//            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
+            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
+            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
 
-//            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
-//            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
+            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
+            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
 
-//            ValidateLifetime = true,
-//            ClockSkew = TimeSpan.FromSeconds(30)
-//        };
-//    });
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
 
-//builder.Services.AddAuthorization();
+builder.Services.AddAuthorization();
 
 // -------- MVC + Swagger --------
 builder.Services.AddControllers().AddJsonOptions(x =>
@@ -172,8 +172,8 @@ if (app.Environment.IsDevelopment() || true)
     app.UseSwaggerUI();
 }
 
-//app.UseAuthentication();
-//app.UseAuthorization();
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 
