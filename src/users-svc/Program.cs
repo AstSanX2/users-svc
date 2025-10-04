@@ -11,17 +11,19 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
 using System.Net;
+using System.Security.Claims;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
-
 
 builder.Services.AddAWSLambdaHosting(LambdaEventSource.RestApi);
 
 var configuration = builder.Configuration;
 var env = builder.Environment;
 
-bool useSsm = !env.IsDevelopment() || string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
+// Quando rodar local: defina USE_SSM=false para cair no appsettings, se quiser.
+bool useSsm = !env.IsDevelopment() ||
+              string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
 
 var ssm = new AmazonSimpleSystemsManagementClient();
 
@@ -29,40 +31,26 @@ string? TryGetSsm(string name, bool decrypt = true)
 {
     try
     {
-        var resp = ssm.GetParameterAsync(new GetParameterRequest
-        {
-            Name = name,
-            WithDecryption = decrypt
-        }).GetAwaiter().GetResult();
+        var resp = ssm.GetParameterAsync(new GetParameterRequest { Name = name, WithDecryption = decrypt })
+                      .GetAwaiter().GetResult();
         return resp?.Parameter?.Value;
     }
-    catch (ParameterNotFoundException)
-    {
-        return null;
-    }
+    catch (ParameterNotFoundException) { return null; }
     catch (AmazonSimpleSystemsManagementException ex) when (
         string.Equals(ex.ErrorCode, "UnrecognizedClientException", StringComparison.OrdinalIgnoreCase) ||
         ex.StatusCode == HttpStatusCode.Forbidden || ex.StatusCode == HttpStatusCode.Unauthorized)
-    {
-        return null;
-    }
-    catch
-    {
-        return null;
-    }
+    { return null; }
+    catch { return null; }
 }
 
 static string FirstNonEmpty(params string?[] vals) => vals.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "";
 
 // -------- MongoDB (Atlas) --------
-// Ordem de resolução:
-// 1) SSM (se habilitado)  2) appsettings (MongoDB:ConnectionString)  3) SSM (fallback final)
 var mongoConnectionString = FirstNonEmpty(
     useSsm ? TryGetSsm("/fcg/MONGODB_URI") : null,
     configuration["MongoDB:ConnectionString"],
     TryGetSsm("/fcg/MONGODB_URI")
 );
-
 if (string.IsNullOrWhiteSpace(mongoConnectionString))
     throw new InvalidOperationException("MongoDB connection string not found (SSM /fcg/MONGODB_URI or MongoDB:ConnectionString).");
 
@@ -72,43 +60,51 @@ builder.Services.AddSingleton<IMongoClient>(_ =>
     settings.ServerApi = new ServerApi(ServerApiVersion.V1);
     return new MongoClient(settings);
 });
-
 builder.Services.AddSingleton(sp =>
 {
     var url = new MongoUrl(mongoConnectionString);
     var dbName = url.DatabaseName;
     if (string.IsNullOrWhiteSpace(dbName))
         throw new InvalidOperationException("Database name must be specified in the MongoDB connection string.");
-    var client = sp.GetRequiredService<IMongoClient>();
-    return client.GetDatabase(dbName);
+    return sp.GetRequiredService<IMongoClient>().GetDatabase(dbName);
 });
 
-// -------- JWT --------
+// -------- JWT (fonte única + espelho nas seções Jwt e JwtOptions) --------
 var jwtSecret = FirstNonEmpty(
     useSsm ? TryGetSsm("/fcg/JWT_SECRET") : null,
     configuration["JwtOptions:Key"],
     TryGetSsm("/fcg/JWT_SECRET")
 );
-
 if (string.IsNullOrWhiteSpace(jwtSecret))
-    throw new InvalidOperationException("JWT secret not found (SSM /fcg/JWT_SECRET or Jwt:Key).");
+    throw new InvalidOperationException("JWT secret not found (/fcg/JWT_SECRET ou Jwt:Key).");
 
 var jwtIssuer = FirstNonEmpty(
     useSsm ? TryGetSsm("/fcg/JWT_ISS", decrypt: false) : null,
     configuration["JwtOptions:Issuer"],
     TryGetSsm("/fcg/JWT_ISS", decrypt: false)
 );
+if (string.IsNullOrWhiteSpace(jwtIssuer))
+    throw new InvalidOperationException("JWT issuer not found (/fcg/JWT_ISS ou Jwt:Issuer).");
 
 var jwtAudience = FirstNonEmpty(
     useSsm ? TryGetSsm("/fcg/JWT_AUD", decrypt: false) : null,
     configuration["JwtOptions:Audience"],
     TryGetSsm("/fcg/JWT_AUD", decrypt: false)
 );
+if (string.IsNullOrWhiteSpace(jwtAudience))
+    throw new InvalidOperationException("JWT audience not found (/fcg/JWT_AUD ou Jwt:Audience).");
+
+var jwtMirror = new Dictionary<string, string?>
+{
+    ["JwtOptions:Key"] = jwtSecret,
+    ["JwtOptions:Issuer"] = jwtIssuer,
+    ["JwtOptions:Audience"] = jwtAudience
+};
+builder.Configuration.AddInMemoryCollection(jwtMirror);
 
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
 
-builder.Services
-    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
@@ -116,14 +112,17 @@ builder.Services
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = signingKey,
 
-            ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
-            ValidIssuer = string.IsNullOrWhiteSpace(jwtIssuer) ? null : jwtIssuer,
+            ValidateIssuer = true,
+            ValidIssuer = jwtIssuer,
 
-            ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
-            ValidAudience = string.IsNullOrWhiteSpace(jwtAudience) ? null : jwtAudience,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
 
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromSeconds(30)
+            ClockSkew = TimeSpan.FromSeconds(30),
+
+            NameClaimType = ClaimTypes.NameIdentifier,
+            RoleClaimType = "role"
         };
     });
 
@@ -133,7 +132,8 @@ builder.Services.AddAuthorization();
 builder.Services.AddControllers().AddJsonOptions(x =>
 {
     x.JsonSerializerOptions.Converters.Add(new ObjectIdJsonConverter());
-}); builder.Services.AddEndpointsApiExplorer();
+});
+builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "UsersSvc", Version = "v1" });
@@ -166,18 +166,24 @@ builder.Services.AddHostedService<MongoSeeder>();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment() || true)
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
-app.MapGet("/health", () => Results.Ok(new { ok = true, svc = "users", env = env.EnvironmentName, useSsm }));
+// endpoints de diagnóstico
+app.MapGet("/health", () => Results.Ok(new
+{
+    ok = true,
+    svc = "users",
+    env = env.EnvironmentName,
+    useSsm,
+    jwt = new { issuer = jwtIssuer, audience = jwtAudience } // útil pra conferir nos logs
+}));
+
 app.MapGet("/", () => "UsersSvc up & running");
 
 app.Run();
