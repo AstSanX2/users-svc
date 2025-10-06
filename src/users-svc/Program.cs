@@ -119,10 +119,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudience = jwtAudience,
 
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromSeconds(30),
-
-            NameClaimType = ClaimTypes.NameIdentifier,
-            RoleClaimType = "role"
+            ClockSkew = TimeSpan.FromSeconds(30)
         };
     });
 
