@@ -3,11 +3,13 @@ name: users-ci
 on:
   push:
     paths:
-      - "src/users-svc/**"
+      - "src/**"
+      - "test/**"
       - ".github/workflows/users-ci.yml"
   pull_request:
     paths:
-      - "src/users-svc/**"
+      - "src/**"
+      - "test/**"
       - ".github/workflows/users-ci.yml"
 
 jobs:
@@ -15,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src/users-svc
+        shell: bash
 
     steps:
       - name: Checkout
@@ -34,18 +36,80 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Restore
+      - name: (Debug) List workspace
+        run: |
+          echo "PWD: $(pwd)"
+          echo "Tree (top 3 levels):"
+          find . -maxdepth 3 -type d -print
+
+      - name: Resolve project paths
+        id: paths
+        run: |
+          set -euo pipefail
+          # API .csproj (preferido): src/users-svc/users-svc.csproj
+          if [ -f "src/users-svc/users-svc.csproj" ]; then
+            API="src/users-svc/users-svc.csproj"
+          else
+            API=$(find . -type f -name "users-svc.csproj" -path "*/src/*" | head -n1 || true)
+          fi
+          if [ -z "${API:-}" ]; then
+            echo "❌ API csproj não encontrado." >&2
+            exit 1
+          fi
+
+          # Tests .csproj (preferido): test/users-svc.Tests/users-svc.Tests.csproj
+          TEST_FOUND="no"
+          if [ -f "test/users-svc.Tests/users-svc.Tests.csproj" ]; then
+            TEST="test/users-svc.Tests/users-svc.Tests.csproj"
+            TEST_FOUND="yes"
+          else
+            TEST=$(find . -type f -name "users-svc.Tests.csproj" -path "*/test/*" | head -n1 || true)
+            if [ -n "${TEST:-}" ]; then
+              TEST_FOUND="yes"
+            fi
+          fi
+
+          echo "api=$API"                >> "$GITHUB_OUTPUT"
+          echo "test=${TEST:-}"          >> "$GITHUB_OUTPUT"
+          echo "test_found=$TEST_FOUND"  >> "$GITHUB_OUTPUT"
+          if [ "$TEST_FOUND" = "yes" ]; then
+            echo "test_dir=$(dirname "$TEST")" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "API:       $API"
+          echo "TEST:      ${TEST:-<none>}"
+          echo "TEST_FOUND ${TEST_FOUND}"
+
+      - name: dotnet --info
+        run: dotnet --info
+
+      - name: Restore (API)
+        run: dotnet restore "${{ steps.paths.outputs.api }}"
+
+      - name: Build (Release, API)
+        run: dotnet build "${{ steps.paths.outputs.api }}" --configuration Release --no-restore
+
+      - name: Restore (Tests)
+        if: ${{ steps.paths.outputs.test_found == 'yes' }}
+        working-directory: ${{ steps.paths.outputs.test_dir }}
         run: dotnet restore
 
-      - name: Build (Release)
+      - name: Build (Release, Tests)
+        if: ${{ steps.paths.outputs.test_found == 'yes' }}
+        working-directory: ${{ steps.paths.outputs.test_dir }}
         run: dotnet build --configuration Release --no-restore
 
-      - name: Test
-        run: |
-          if ls ../**/users-svc.Tests.csproj 1> /dev/null 2>&1; then
-            for proj in $(ls ../**/*Tests.csproj); do
-              dotnet test "$proj" --configuration Release --no-build --collect:"XPlat Code Coverage" --logger trx
-            done
-          else
-            echo "Nenhum projeto de teste encontrado (ok para esta fase)."
-          fi
+      - name: Test (Release)
+        if: ${{ steps.paths.outputs.test_found == 'yes' }}
+        working-directory: ${{ steps.paths.outputs.test_dir }}
+        run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test_results.trx"
+
+      - name: Upload Test Artifacts
+        if: ${{ steps.paths.outputs.test_found == 'yes' && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: users-tests-artifacts
+          path: |
+            ${{ steps.paths.outputs.test_dir }}/TestResults/*.trx
+            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.cobertura.xml
+            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.info
