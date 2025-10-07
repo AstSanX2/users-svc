@@ -155,6 +155,7 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // -------- DI --------
+builder.Services.AddScoped<IEventRepository, EventRepository>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
