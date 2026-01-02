@@ -17,8 +17,19 @@
   <ItemGroup>
     <Content Include="Dockerfile" />
   </ItemGroup>
+  <!--
+    IMPORTANT:
+    O Worker (src/Worker) é um projeto separado (UsersWorker.csproj).
+    Se não removermos os .cs do Worker daqui, o users-svc compila dois Program.cs
+    com top-level statements e gera CS8802.
+  -->
+  <ItemGroup>
+    <Compile Remove="Worker\**\*.cs" />
+    <None Remove="Worker\**\*.cs" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="4.0.4.2" />
+    <PackageReference Include="AWSSDK.SQS" Version="4.0.1.7" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.20" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />

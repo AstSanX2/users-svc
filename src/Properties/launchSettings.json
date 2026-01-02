@@ -11,11 +11,22 @@
     "Docker": {
       "commandName": "Docker",
       "launchBrowser": true,
-      "launchUrl": "http://localhost:8080",
+      "launchUrl": "http://localhost:8080/health",
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "MONGODB_URI": "mongodb://host.docker.internal:27017/fcg-db",
+        "JWT_SECRET": "SuaChaveSecretaAquiComPeloMenos32Caracteres!",
+        "JWT_ISS": "fcg-users-api",
+        "JWT_AUD": "fcg-api",
+        "SQS_SERVICE_URL": "http://host.docker.internal:4566",
+        "AWS_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "test",
+        "AWS_SECRET_ACCESS_KEY": "test",
+        "USERS_EVENTS_QUEUE_URL": "http://sqs.us-east-1.localstack.localstack.cloud:4566/000000000000/users-events-queue"
       },
-      "publishAllPorts": true
+      "publishAllPorts": false,
+      "useSSL": false,
+      "httpPort": 8080
     }
   }
 }
