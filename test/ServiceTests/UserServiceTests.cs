@@ -7,6 +7,7 @@ using Domain.Interfaces.Services;
 using MongoDB.Bson;
 using Moq;
 using System.Linq.Expressions;
+using Xunit;
 
 namespace users_svc.Tests.ServiceTests
 {
