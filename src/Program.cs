@@ -1,6 +1,4 @@
-﻿using Amazon.SimpleSystemsManagement;
-using Amazon.SimpleSystemsManagement.Model;
-using Application.Services;
+﻿using Application.Services;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
 using Helpers;
@@ -11,7 +9,6 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
-using System.Net;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -38,67 +35,21 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 var configuration = builder.Configuration;
 var env = builder.Environment;
 
-// ------------------------------------------------------
-// Feature flag para uso de SSM (em k8s você pode desligar
-// e usar apenas env vars / secrets).
-// ------------------------------------------------------
-bool useSsm = !env.IsDevelopment() ||
-              string.Equals(Environment.GetEnvironmentVariable("USE_SSM"), "true", StringComparison.OrdinalIgnoreCase);
-
-// SSM é lazy: só cria client se realmente for usar.
-IAmazonSimpleSystemsManagement? ssm = null;
-
-string? TryGetSsm(string name, bool decrypt = true)
-{
-    if (!useSsm) return null;
-
-    ssm ??= new AmazonSimpleSystemsManagementClient();
-
-    try
-    {
-        var resp = ssm.GetParameterAsync(new GetParameterRequest
-        {
-            Name = name,
-            WithDecryption = decrypt
-        }).GetAwaiter().GetResult();
-
-        return resp?.Parameter?.Value;
-    }
-    catch (ParameterNotFoundException)
-    {
-        return null;
-    }
-    catch (AmazonSimpleSystemsManagementException ex) when (
-        string.Equals(ex.ErrorCode, "UnrecognizedClientException", StringComparison.OrdinalIgnoreCase) ||
-        ex.StatusCode == HttpStatusCode.Forbidden ||
-        ex.StatusCode == HttpStatusCode.Unauthorized)
-    {
-        // Sem permissão / credencial → ignora e segue para outras fontes
-        return null;
-    }
-    catch
-    {
-        // Qualquer outro erro de SSM não deve impedir o serviço de subir
-        return null;
-    }
-}
-
 static string FirstNonEmpty(params string?[] vals) =>
     vals.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "";
 
 // ------------------------------------------------------
 // MongoDB (Atlas)
-// Em k8s: preferencialmente via env (ConfigMap/Secret)
+// Local: appsettings no repo
+// Prod (K8s): appsettings montado no container (ConfigMap/Secret)
 // ------------------------------------------------------
 var mongoConnectionString = FirstNonEmpty(
-    useSsm ? TryGetSsm("/fcg/MONGODB_URI") : null,
     configuration["MongoDB:ConnectionString"],
-    Environment.GetEnvironmentVariable("MONGODB_URI"),
-    TryGetSsm("/fcg/MONGODB_URI")
+    Environment.GetEnvironmentVariable("MONGODB_URI") // compatibilidade (pode remover depois)
 );
 
 if (string.IsNullOrWhiteSpace(mongoConnectionString))
-    throw new InvalidOperationException("MongoDB connection string not found (SSM /fcg/MONGODB_URI, env MONGODB_URI ou MongoDB:ConnectionString).");
+    throw new InvalidOperationException("MongoDB connection string not found (MongoDB:ConnectionString no appsettings ou env MONGODB_URI).");
 
 builder.Services.AddSingleton<IMongoClient>(_ =>
 {
@@ -118,37 +69,32 @@ builder.Services.AddSingleton(sp =>
 
 // ------------------------------------------------------
 // JWT (fonte única + espelho nas seções JwtOptions)
-// Em k8s: usar Secret para a key.
+// Local: appsettings no repo
+// Prod (K8s): appsettings montado no container (ConfigMap/Secret)
 // ------------------------------------------------------
 var jwtSecret = FirstNonEmpty(
-    useSsm ? TryGetSsm("/fcg/JWT_SECRET") : null,
     configuration["JwtOptions:Key"],
-    Environment.GetEnvironmentVariable("JWT_SECRET"),
-    TryGetSsm("/fcg/JWT_SECRET")
+    Environment.GetEnvironmentVariable("JWT_SECRET") // compatibilidade (pode remover depois)
 );
 
 if (string.IsNullOrWhiteSpace(jwtSecret))
-    throw new InvalidOperationException("JWT secret not found (/fcg/JWT_SECRET, env JWT_SECRET ou JwtOptions:Key).");
+    throw new InvalidOperationException("JWT secret not found (JwtOptions:Key no appsettings ou env JWT_SECRET).");
 
 var jwtIssuer = FirstNonEmpty(
-    useSsm ? TryGetSsm("/fcg/JWT_ISS", decrypt: false) : null,
     configuration["JwtOptions:Issuer"],
-    Environment.GetEnvironmentVariable("JWT_ISS"),
-    TryGetSsm("/fcg/JWT_ISS", decrypt: false)
+    Environment.GetEnvironmentVariable("JWT_ISS") // compatibilidade (pode remover depois)
 );
 
 if (string.IsNullOrWhiteSpace(jwtIssuer))
-    throw new InvalidOperationException("JWT issuer not found (/fcg/JWT_ISS, env JWT_ISS ou JwtOptions:Issuer).");
+    throw new InvalidOperationException("JWT issuer not found (JwtOptions:Issuer no appsettings ou env JWT_ISS).");
 
 var jwtAudience = FirstNonEmpty(
-    useSsm ? TryGetSsm("/fcg/JWT_AUD", decrypt: false) : null,
     configuration["JwtOptions:Audience"],
-    Environment.GetEnvironmentVariable("JWT_AUD"),
-    TryGetSsm("/fcg/JWT_AUD", decrypt: false)
+    Environment.GetEnvironmentVariable("JWT_AUD") // compatibilidade (pode remover depois)
 );
 
 if (string.IsNullOrWhiteSpace(jwtAudience))
-    throw new InvalidOperationException("JWT audience not found (/fcg/JWT_AUD, env JWT_AUD ou JwtOptions:Audience).");
+    throw new InvalidOperationException("JWT audience not found (JwtOptions:Audience no appsettings ou env JWT_AUD).");
 
 // espelho em configuration pra quem injeta IOptions<JwtOptions>
 var jwtMirror = new Dictionary<string, string?>
@@ -261,7 +207,6 @@ app.MapGet("/health", () => Results.Ok(new
     ok = true,
     svc = "users",
     env = env.EnvironmentName,
-    useSsm,
     jwt = new { issuer = jwtIssuer, audience = jwtAudience }
 }));
 

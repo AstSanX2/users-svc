@@ -28,7 +28,6 @@
     <None Remove="Worker\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="AWSSDK.SimpleSystemsManagement" Version="4.0.4.2" />
     <PackageReference Include="AWSSDK.SQS" Version="4.0.1.7" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.20" />

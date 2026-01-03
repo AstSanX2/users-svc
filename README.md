@@ -11,7 +11,7 @@ Este README é um guia completo: **como rodar local**, **como configurar segredo
 - [Stack / Tecnologias](#stack--tecnologias)
 - [Rotas Principais](#rotas-principais)
 - [Pré-requisitos](#pré-requisitos)
-- [Configuração de Segredos (SSM Parameter Store)](#configuração-de-segredos-ssm-parameter-store)
+- [Configuração (appsettings)](#configuração-appsettings)
 - [Configuração Local (Dev)](#configuração-local-dev)
 - [Execução Local](#execução-local)
 - [Deploy na AWS (Serverless)](#deploy-na-aws-serverless)
@@ -34,7 +34,7 @@ Client → API Gateway (REST proxy)
 ```
 
 - **JWT** emitido pelo Users e validado pelos demais serviços (Games/Payments).  
-- **Segredos** (Mongo URI + JWT settings) mantidos no **SSM Parameter Store**.  
+- **Configuração** via `appsettings` (local) e `appsettings.Production.json` montado no Kubernetes.  
 - **Tracing** habilitado (**X-Ray**) e **logs** via CloudWatch.
 
 ---
@@ -45,7 +45,7 @@ Client → API Gateway (REST proxy)
 - **AWS Lambda** + **API Gateway (REST)**.
 - **MongoDB Atlas** (driver oficial `MongoDB.Driver`).
 - **JWT** (`Microsoft.AspNetCore.Authentication.JwtBearer`).
-- **SSM Parameter Store** para segredos.
+- Configuração por `appsettings`.
 - **AWS X-Ray** (traces) + **CloudWatch Logs**.
 - Ferramentas:
   - `AWS CLI`, `Amazon.Lambda.Tools` (`dotnet lambda`).
@@ -89,27 +89,10 @@ Client → API Gateway (REST proxy)
 
 ---
 
-## Configuração de Segredos (SSM Parameter Store)
+## Configuração (appsettings)
 
-Os serviços leem primeiro do **SSM**, e **em dev** podem cair para `appsettings.json` como fallback.  
-> Namespace adotado: **`/fcg/...`**
-
-Crie os parâmetros **no mesmo `region` da Lambda** (ex.: `us-east-1`):
-
-```bash
-# MongoDB URI (com nome do DB na URI!)
-aws ssm put-parameter \
-  --name "/fcg/MONGODB_URI" \
-  --type "SecureString" \
-  --value "mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/<db>?retryWrites=true&w=majority&appName=<app>"
-
-# JWT
-aws ssm put-parameter --name "/fcg/JWT_SECRET" --type "SecureString" --value "<uma-chave-bem-aleatória-32+ chars>"
-aws ssm put-parameter --name "/fcg/JWT_ISS"    --type "String"       --value "fcg-auth"
-aws ssm put-parameter --name "/fcg/JWT_AUD"    --type "String"       --value "fcg-clients"
-```
-
-**Importante**: a **URI do Mongo** deve incluir o **nome do banco** (ex.: `.../fgc-db?...`). Sem o nome, o driver lança `Database name must be specified in the connection string.`
+- **Local**: `appsettings.Development.json` no repositório.
+- **Prod (Kubernetes)**: `appsettings.Production.json` montado no pod via `k8s/secrets.yaml` (chave `appsettings.Production.json`).
 
 ---
 
@@ -131,7 +114,7 @@ Formato esperado (se usar arquivo local):
 }
 ```
 
-> Em **produção** (Lambda), os valores vêm do **SSM** automaticamente.
+> Em produção (Kubernetes), os valores vêm do `appsettings.Production.json` montado no pod.
 
 ---
 
@@ -278,16 +261,16 @@ src/users-svc/
 - **Role da Lambda (users-svc)**:
   - `AWSLambdaBasicExecutionRole` (logs)
   - `AWSXRayDaemonWriteAccess` (traces)
-  - `AmazonSSMReadOnlyAccess` (ou policy custom `ssm:GetParameter` nos caminhos `/fcg/*`) — *somente leitura de parâmetros necessários*.
+  - (Kubernetes) use Secrets/ConfigMaps para configurações e segredos.
 
 > **Princípio do menor privilégio**: evite policies amplas (ex.: `*FullAccess`).  
-> O serviço **Users** não precisa acessar SQS ou outros serviços fora SSM/Mongo.
+> O serviço **Users** usa apenas configuração via `appsettings`.
 
 ---
 
 ## Dicas e Troubleshooting
 
-**1) `The security token included in the request is invalid` (SSM)**  
+**1) `The security token included in the request is invalid`**  
 - AWS CLI/profile não configurado no ambiente local.  
 - Em Lambda, a **role** não tem permissão `ssm:GetParameter`.  
 - Parâmetros criados em **outra região**.
@@ -297,7 +280,7 @@ src/users-svc/
   `...mongodb.net/<db>?retryWrites=true...`
 
 **3) `ParameterNotFound`**  
-- Garanta que os parâmetros `/fcg/MONGODB_URI`, `/fcg/JWT_SECRET`, `/fcg/JWT_ISS`, `/fcg/JWT_AUD` existem **na mesma região** da Lambda.
+- Garanta que as configurações (Mongo/JWT) foram definidas via `appsettings`.
 
 **4) `401 Unauthorized` nos outros serviços (Games/Payments)**  
 - **Mismatch** de JWT (Issuer/Audience/Secret) — padronize **exatamente os mesmos valores** nos três serviços.

@@ -1,7 +1,5 @@
 ﻿using Amazon;
 using Amazon.Runtime;
-using Amazon.SimpleSystemsManagement;
-using Amazon.SimpleSystemsManagement.Model;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Application.DTO.AuthenticationDTO;
@@ -27,19 +25,34 @@ namespace Application.Services
     {
         private readonly IConfiguration _configuration = configuration;
         private readonly IHostEnvironment _env = env;
-        private readonly IAmazonSQS _sqs = CreateSqsClient();
+        private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
 
-        private static IAmazonSQS CreateSqsClient()
+        private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
         {
-            var serviceUrl = Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
+            var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
             if (!string.IsNullOrEmpty(serviceUrl))
             {
                 // LocalStack ou outro emulador
                 var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
+                var accessKey = configuration["AWS:AccessKey"];
+                var secretKey = configuration["AWS:SecretKey"];
+                if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
+                    return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
+
                 return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
             }
-            // AWS real
-            return new AmazonSQSClient();
+            // AWS real (credenciais via appsettings ou cadeia default)
+            var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
+            var sqsConfig = new AmazonSQSConfig();
+            if (!string.IsNullOrWhiteSpace(region))
+                sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
+
+            var ak = configuration["AWS:AccessKey"];
+            var sk = configuration["AWS:SecretKey"];
+            if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
+                return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
+
+            return new AmazonSQSClient(sqsConfig);
         }
 
         public async Task<ResponseModel<ObjectId>> Register(RegisterUserDTO registerUserRequest)
@@ -115,37 +128,18 @@ namespace Application.Services
 
         private string? GetQueueUrl()
         {
-            // Primeiro tenta variável de ambiente (K8s ConfigMap/Secret)
+            // Primeiro tenta env var (K8s ConfigMap/Secret)
             var queueUrl = Environment.GetEnvironmentVariable("USERS_EVENTS_QUEUE_URL");
-            if (!string.IsNullOrEmpty(queueUrl))
-                return queueUrl;
+            if (!string.IsNullOrEmpty(queueUrl)) return queueUrl;
 
-            // Se não estiver em desenvolvimento, tenta SSM
-            if (!_env.IsDevelopment())
-            {
-                try
-                {
-                    using var ssm = new AmazonSimpleSystemsManagementClient();
-                    var resp = ssm.GetParameterAsync(new GetParameterRequest
-                    {
-                        Name = "/fcg/USERS_EVENTS_QUEUE_URL"
-                    }).GetAwaiter().GetResult();
-                    return resp.Parameter?.Value;
-                }
-                catch
-                {
-                    return null;
-                }
-            }
-
-            return null;
+            // Depois tenta appsettings (K8s: arquivo montado; Local: arquivo do repo)
+            return _configuration["Sqs:UsersEventsQueueUrl"]
+                ?? _configuration["USERS_EVENTS_QUEUE_URL"];
         }
 
         private AuthenticationTokenDTO GenerateToken(User user)
         {
-            // 1) Resolve JwtOptions de acordo com o ambiente:
-            //    - Development/Debug: appsettings (JwtOptions)
-            //    - Ambientes não-Dev: SSM Parameter Store (/fcg/JWT_SECRET, /fcg/JWT_ISS, /fcg/JWT_AUD)
+            // Resolve JwtOptions via appsettings (Local: arquivo no repo; Prod/K8s: arquivo montado no pod)
             var jwt = ResolveJwtOptions();
 
             // 2) Claims
@@ -185,34 +179,14 @@ namespace Application.Services
 
         private (string Key, string Issuer, string Audience) ResolveJwtOptions()
         {
-            if (_env.IsDevelopment())
-            {
-                var key = _configuration["JwtOptions:Key"];
-                var iss = _configuration["JwtOptions:Issuer"];
-                var aud = _configuration["JwtOptions:Audience"];
+            var key = _configuration["JwtOptions:Key"];
+            var iss = _configuration["JwtOptions:Issuer"];
+            var aud = _configuration["JwtOptions:Audience"];
 
-                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(iss) || string.IsNullOrWhiteSpace(aud))
-                    throw new InvalidOperationException("JwtOptions incompleto no appsettings (Key/Issuer/Audience).");
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(iss) || string.IsNullOrWhiteSpace(aud))
+                throw new InvalidOperationException("JwtOptions incompleto no appsettings (Key/Issuer/Audience).");
 
-                return (key, iss, aud);
-            }
-
-            var ssm = new AmazonSimpleSystemsManagementClient();
-            string Get(string name, bool decrypt = true)
-            {
-                var resp = ssm.GetParameterAsync(new GetParameterRequest { Name = name, WithDecryption = decrypt })
-                              .GetAwaiter().GetResult();
-                return resp.Parameter?.Value ?? throw new InvalidOperationException($"Parâmetro SSM ausente: {name}");
-            }
-
-            var keySsm = Get("/fcg/JWT_SECRET", decrypt: true);
-            var issSsm = Get("/fcg/JWT_ISS", decrypt: false);
-            var audSsm = Get("/fcg/JWT_AUD", decrypt: false);
-
-            if (string.IsNullOrWhiteSpace(keySsm) || string.IsNullOrWhiteSpace(issSsm) || string.IsNullOrWhiteSpace(audSsm))
-                throw new InvalidOperationException("Parâmetros JWT do SSM inválidos (JWT_SECRET/JWT_ISS/JWT_AUD).");
-
-            return (keySsm, issSsm, audSsm);
+            return (key, iss, aud);
         }
     }
 }
