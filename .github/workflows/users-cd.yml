@@ -55,7 +55,8 @@ jobs:
       - name: Build & Push (users-api)
         uses: docker/build-push-action@v6
         with:
-          context: ./src
+          # Dockerfile assume contexto no root do repo (onde existe ./src/users-svc.csproj)
+          context: .
           file: ./src/Dockerfile
           push: true
           tags: |

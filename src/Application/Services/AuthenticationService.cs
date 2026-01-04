@@ -29,9 +29,10 @@ namespace Application.Services
     {
         private readonly IConfiguration _configuration = configuration;
         private readonly IHostEnvironment _env = env;
-        private readonly IAmazonSQS _sqs = CreateSqsClient(configuration);
+        // SQS deve ser opcional: em CI/testes pode não haver region/serviceUrl configurado.
+        private IAmazonSQS? _sqs;
 
-        private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
+        private static IAmazonSQS? CreateSqsClient(IConfiguration configuration)
         {
             var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
             if (!string.IsNullOrEmpty(serviceUrl))
@@ -47,9 +48,16 @@ namespace Application.Services
             }
             // AWS real (credenciais via appsettings ou cadeia default)
             var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
-            var sqsConfig = new AmazonSQSConfig();
-            if (!string.IsNullOrWhiteSpace(region))
-                sqsConfig.RegionEndpoint = RegionEndpoint.GetBySystemName(region);
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                // Sem region e sem serviceUrl => não dá para inicializar client (ex.: CI)
+                return null;
+            }
+
+            var sqsConfig = new AmazonSQSConfig
+            {
+                RegionEndpoint = RegionEndpoint.GetBySystemName(region)
+            };
 
             var ak = configuration["AWS:AccessKey"];
             var sk = configuration["AWS:SecretKey"];
@@ -201,6 +209,13 @@ namespace Application.Services
                 {
                     // Em desenvolvimento sem SQS configurado, apenas loga
                     Console.WriteLine($"[SQS] Evento {eventType} para usuário {userId} (SQS não configurado)");
+                    return;
+                }
+
+                _sqs ??= CreateSqsClient(_configuration);
+                if (_sqs is null)
+                {
+                    Console.WriteLine($"[SQS] Evento {eventType} para usuário {userId} (SQS sem Region/ServiceUrl configurado)");
                     return;
                 }
 
