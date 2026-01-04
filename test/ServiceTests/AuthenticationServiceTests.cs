@@ -4,6 +4,7 @@ using AutoFixture;
 using Domain.Entities;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
+using Helpers.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
@@ -31,8 +32,8 @@ namespace users_svc.Tests.ServiceTests
                     _id = ObjectId.GenerateNewId(),
                     Name = "Existing User",
                     Email = "existing@email.com",
-                    Password = "Senha@123".ToHash(), // Hash da senha
-                    Role = Domain.Enums.UserRole.User
+                    Password = "Senha@123".ToHash(), // Hash (mesma função do sistema)
+                    Role = Domain.Enums.UserRole.UserApp
                 }
             };
         }
@@ -70,7 +71,7 @@ namespace users_svc.Tests.ServiceTests
                         Name = dto.Name,
                         Email = dto.Email,
                         Password = dto.Password.ToHash(),
-                        Role = Domain.Enums.UserRole.User
+                        Role = Domain.Enums.UserRole.UserApp
                     };
                     _stubUsers.Add(entity);
                     return entity;
@@ -279,14 +280,5 @@ namespace users_svc.Tests.ServiceTests
         }
     }
 
-    // Helper extension para gerar hash de senha (mock do comportamento real)
-    internal static class PasswordHashExtension
-    {
-        public static string ToHash(this string password)
-        {
-            // Simula o hash BCrypt usado no sistema real
-            return BCrypt.Net.BCrypt.HashPassword(password);
-        }
-    }
 }
 
