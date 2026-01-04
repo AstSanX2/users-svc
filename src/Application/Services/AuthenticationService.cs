@@ -21,7 +21,11 @@ namespace Application.Services
     // Mensagens de eventos para SQS
     public record UserEventMessage(string EventType, string UserId, string Email, DateTime Timestamp);
 
-    public class AuthenticationService(IUserRepository userRepository, IConfiguration configuration, IHostEnvironment env) : IAuthenticationService
+    public class AuthenticationService(
+        IUserRepository userRepository, 
+        IEventRepository eventRepository,
+        IConfiguration configuration, 
+        IHostEnvironment env) : IAuthenticationService
     {
         private readonly IConfiguration _configuration = configuration;
         private readonly IHostEnvironment _env = env;
@@ -59,13 +63,53 @@ namespace Application.Services
         {
             var validationResult = registerUserRequest.Validate();
             if (validationResult.HasError)
+            {
+                // Registra evento de validação falhada
+                var evFail = DomainEvent.Create(
+                    aggregateId: ObjectId.Empty,
+                    type: "UserRegistrationValidationFailed",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["Errors"] = validationResult.ToString(),
+                        ["Email"] = registerUserRequest.Email // Não incluir dados sensíveis como senha
+                    }
+                );
+                await eventRepository.AppendEventAsync(evFail, CancellationToken.None);
+
                 return ResponseModel<ObjectId>.BadRequest(validationResult.ToString());
+            }
 
             var user = await userRepository.FindOneAsync(u => u.Email == registerUserRequest.Email);
             if (user is not null)
+            {
+                // Registra evento de email duplicado
+                var evDup = DomainEvent.Create(
+                    aggregateId: ObjectId.Empty,
+                    type: "UserRegistrationDuplicateEmail",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["Email"] = registerUserRequest.Email
+                    }
+                );
+                await eventRepository.AppendEventAsync(evDup, CancellationToken.None);
+
                 return ResponseModel<ObjectId>.BadRequest("Email de Usuário já registrado");
+            }
 
             var result = await userRepository.CreateAsync(registerUserRequest);
+
+            // Registra evento de usuário registrado
+            var ev = DomainEvent.Create(
+                aggregateId: result._id,
+                type: "UserRegistered",
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = result._id.ToString(),
+                    ["Email"] = registerUserRequest.Email,
+                    ["Name"] = registerUserRequest.Name
+                }
+            );
+            await eventRepository.AppendEventAsync(ev, CancellationToken.None);
 
             // Publicar evento UserRegistered na SQS (fire-and-forget, não bloqueia resposta)
             _ = PublishUserEventAsync("UserRegistered", result._id.ToString(), registerUserRequest.Email);
@@ -77,21 +121,73 @@ namespace Application.Services
         {
             var validationResult = loginUserRequest.Validate();
             if (validationResult.HasError)
+            {
+                // Registra evento de validação falhada
+                var evFail = DomainEvent.Create(
+                    aggregateId: ObjectId.Empty,
+                    type: "UserLoginValidationFailed",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["Errors"] = validationResult.ToString(),
+                        ["Email"] = loginUserRequest.Email
+                    }
+                );
+                await eventRepository.AppendEventAsync(evFail, CancellationToken.None);
+
                 return ResponseModel<AuthenticationTokenDTO>.BadRequest(validationResult.ToString());
+            }
 
             var user = await userRepository.FindOneAsync(u => u.Email == loginUserRequest.Email);
             if (user is null)
+            {
+                // Registra evento de usuário não encontrado
+                var evNotFound = DomainEvent.Create(
+                    aggregateId: ObjectId.Empty,
+                    type: "UserLoginUserNotFound",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["Email"] = loginUserRequest.Email
+                    }
+                );
+                await eventRepository.AppendEventAsync(evNotFound, CancellationToken.None);
+
                 return ResponseModel<AuthenticationTokenDTO>.BadRequest("Login Inválido");
+            }
 
             if (user.Password.Equals(loginUserRequest.Password.ToHash()))
             {
                 var token = GenerateToken(user);
+
+                // Registra evento de login bem-sucedido
+                var ev = DomainEvent.Create(
+                    aggregateId: user._id,
+                    type: "UserLoggedIn",
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = user._id.ToString(),
+                        ["Email"] = user.Email
+                    }
+                );
+                await eventRepository.AppendEventAsync(ev, CancellationToken.None);
 
                 // Publicar evento UserLoggedIn na SQS (fire-and-forget, não bloqueia resposta)
                 _ = PublishUserEventAsync("UserLoggedIn", user._id.ToString(), user.Email);
 
                 return ResponseModel<AuthenticationTokenDTO>.Ok(token);
             }
+
+            // Registra evento de senha inválida
+            var evInvalid = DomainEvent.Create(
+                aggregateId: user._id,
+                type: "UserLoginFailed",
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = user._id.ToString(),
+                    ["Email"] = user.Email,
+                    ["Reason"] = "InvalidPassword"
+                }
+            );
+            await eventRepository.AppendEventAsync(evInvalid, CancellationToken.None);
 
             return ResponseModel<AuthenticationTokenDTO>.Unauthorized("O usuário não pode ser autenticado, verifique suas informações.");
         }
@@ -142,7 +238,7 @@ namespace Application.Services
             // Resolve JwtOptions via appsettings (Local: arquivo no repo; Prod/K8s: arquivo montado no pod)
             var jwt = ResolveJwtOptions();
 
-            // 2) Claims
+            // Claims
             var claims = new List<Claim>
             {
                 new("UserId", user._id.ToString()),

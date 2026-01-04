@@ -176,7 +176,8 @@ public class UserEventsWorker : BackgroundService
     private async Task HandleUserLoggedInAsync(UserEventMessage evt, CancellationToken ct)
     {
         // Atualiza last login do usuário
-        var users = _db.GetCollection<BsonDocument>("Users");
+        // Collection name deve ser "User" para coincidir com o repositório (nameof(User))
+        var users = _db.GetCollection<BsonDocument>("User");
         if (ObjectId.TryParse(evt.UserId, out var userId))
         {
             var filter = Builders<BsonDocument>.Filter.Eq("_id", userId);
