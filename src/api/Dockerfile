@@ -1,32 +1,33 @@
-# ===== STAGE 1: build/publish =====
+﻿# ===== STAGE 1: build/publish =====
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
 WORKDIR /src
 
 ARG BUILD_CONFIGURATION=Release
 
-COPY src/worker/UsersWorker.csproj src/worker/
 COPY src/api/users-svc.csproj src/api/
-RUN dotnet restore src/worker/UsersWorker.csproj
+RUN dotnet restore src/api/users-svc.csproj
 
 COPY src/ src/
-RUN dotnet publish src/worker/UsersWorker.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
+RUN dotnet publish src/api/users-svc.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
 
 # ===== STAGE 2: runtime =====
-# O worker referencia o projeto Web (`users-svc`), então precisa do shared framework `Microsoft.AspNetCore.App`.
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS final
 WORKDIR /app
 
-# Instalar certificados e timezone
+# Instalar timezone/ICU (se necessário)
 RUN apk add --no-cache icu-libs tzdata
 
 COPY --from=build --chown=app:app /app .
 
+ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_ENVIRONMENT=Production
 ENV DOTNET_EnableDiagnostics=false
 ENV DOTNET_TieredPGO=1
 ENV DOTNET_TC_QuickJitForLoops=1
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
+EXPOSE 8080
+
 USER app
 
-ENTRYPOINT ["dotnet", "UsersWorker.dll"]
-
+ENTRYPOINT ["dotnet", "users-svc.dll"]

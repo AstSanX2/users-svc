@@ -1,71 +1,30 @@
-﻿using Amazon;
-using Amazon.Runtime;
-using Amazon.SQS;
-using Amazon.SQS.Model;
-using Application.DTO.AuthenticationDTO;
+﻿using Application.DTO.AuthenticationDTO;
 using Application.DTO.UsersDTO;
 using Domain.Entities;
+using Domain.Events;
 using Domain.Interfaces.Repositories;
 using Domain.Interfaces.Services;
 using Domain.Models.Response;
 using Helpers.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Bson;
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
-using System.Text.Json;
 
 namespace Application.Services
 {
-    // Mensagens de eventos para SQS
-    public record UserEventMessage(string EventType, string UserId, string Email, DateTime Timestamp);
-
     public class AuthenticationService(
         IUserRepository userRepository, 
         IEventRepository eventRepository,
+        IOutboxRepository outboxRepository,
         IConfiguration configuration, 
         IHostEnvironment env) : IAuthenticationService
     {
         private readonly IConfiguration _configuration = configuration;
         private readonly IHostEnvironment _env = env;
-        // SQS deve ser opcional: em CI/testes pode não haver region/serviceUrl configurado.
-        private IAmazonSQS? _sqs;
-
-        private static IAmazonSQS? CreateSqsClient(IConfiguration configuration)
-        {
-            var serviceUrl = configuration["Sqs:ServiceUrl"] ?? Environment.GetEnvironmentVariable("SQS_SERVICE_URL");
-            if (!string.IsNullOrEmpty(serviceUrl))
-            {
-                // LocalStack ou outro emulador
-                var config = new AmazonSQSConfig { ServiceURL = serviceUrl };
-                var accessKey = configuration["AWS:AccessKey"];
-                var secretKey = configuration["AWS:SecretKey"];
-                if (!string.IsNullOrWhiteSpace(accessKey) && !string.IsNullOrWhiteSpace(secretKey))
-                    return new AmazonSQSClient(new BasicAWSCredentials(accessKey, secretKey), config);
-
-                return new AmazonSQSClient(new BasicAWSCredentials("test", "test"), config);
-            }
-            // AWS real (credenciais via appsettings ou cadeia default)
-            var region = configuration["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_REGION");
-            if (string.IsNullOrWhiteSpace(region))
-            {
-                // Sem region e sem serviceUrl => não dá para inicializar client (ex.: CI)
-                return null;
-            }
-
-            var sqsConfig = new AmazonSQSConfig
-            {
-                RegionEndpoint = RegionEndpoint.GetBySystemName(region)
-            };
-
-            var ak = configuration["AWS:AccessKey"];
-            var sk = configuration["AWS:SecretKey"];
-            if (!string.IsNullOrWhiteSpace(ak) && !string.IsNullOrWhiteSpace(sk))
-                return new AmazonSQSClient(new BasicAWSCredentials(ak, sk), sqsConfig);
-
-            return new AmazonSQSClient(sqsConfig);
-        }
+        private const string SourceName = "users-svc";
 
         public async Task<ResponseModel<ObjectId>> Register(RegisterUserDTO registerUserRequest)
         {
@@ -119,8 +78,15 @@ namespace Application.Services
             );
             await eventRepository.AppendEventAsync(ev, CancellationToken.None);
 
-            // Publicar evento UserRegistered na SQS (fire-and-forget, não bloqueia resposta)
-            _ = PublishUserEventAsync("UserRegistered", result._id.ToString(), registerUserRequest.Email);
+            // Publica evento de integração via Outbox (resiliente).
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "UserRegistered",
+                aggregateId: result._id.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = result._id.ToString(),
+                    ["Email"] = registerUserRequest.Email
+                });
 
             return ResponseModel<ObjectId>.Ok(result._id);
         }
@@ -178,8 +144,15 @@ namespace Application.Services
                 );
                 await eventRepository.AppendEventAsync(ev, CancellationToken.None);
 
-                // Publicar evento UserLoggedIn na SQS (fire-and-forget, não bloqueia resposta)
-                _ = PublishUserEventAsync("UserLoggedIn", user._id.ToString(), user.Email);
+                // Publica evento de integração via Outbox (resiliente).
+                _ = EnqueueIntegrationEventAsync(
+                    eventType: "UserLoggedIn",
+                    aggregateId: user._id.ToString(),
+                    data: new Dictionary<string, object?>
+                    {
+                        ["UserId"] = user._id.ToString(),
+                        ["Email"] = user.Email
+                    });
 
                 return ResponseModel<AuthenticationTokenDTO>.Ok(token);
             }
@@ -200,52 +173,43 @@ namespace Application.Services
             return ResponseModel<AuthenticationTokenDTO>.Unauthorized("O usuário não pode ser autenticado, verifique suas informações.");
         }
 
-        private async Task PublishUserEventAsync(string eventType, string userId, string email)
+        private async Task EnqueueIntegrationEventAsync(string eventType, string aggregateId, Dictionary<string, object?> data)
         {
             try
             {
-                var queueUrl = GetQueueUrl();
-                if (string.IsNullOrEmpty(queueUrl))
-                {
-                    // Em desenvolvimento sem SQS configurado, apenas loga
-                    Console.WriteLine($"[SQS] Evento {eventType} para usuário {userId} (SQS não configurado)");
+                var queueUrl = _configuration["Sqs:UsersEventsQueueUrl"] ?? _configuration["USERS_EVENTS_QUEUE_URL"];
+                if (string.IsNullOrWhiteSpace(queueUrl))
                     return;
-                }
 
-                _sqs ??= CreateSqsClient(_configuration);
-                if (_sqs is null)
+                var correlationId = Activity.Current?.TraceId.ToString();
+                var env = IntegrationEventEnvelope.Create(
+                    type: eventType,
+                    source: SourceName,
+                    aggregateId: aggregateId,
+                    data: data,
+                    correlationId: correlationId
+                );
+
+                var body = System.Text.Json.JsonSerializer.Serialize(env);
+                var outbox = new OutboxMessage
                 {
-                    Console.WriteLine($"[SQS] Evento {eventType} para usuário {userId} (SQS sem Region/ServiceUrl configurado)");
-                    return;
-                }
+                    EventId = env.EventId,
+                    EventType = env.Type,
+                    Source = env.Source,
+                    AggregateId = env.AggregateId,
+                    CorrelationId = env.CorrelationId,
+                    CausationId = env.CausationId,
+                    Version = env.Version,
+                    Destination = queueUrl,
+                    Body = body
+                };
 
-                var message = new UserEventMessage(eventType, userId, email, DateTime.UtcNow);
-                var body = JsonSerializer.Serialize(message);
-
-                await _sqs.SendMessageAsync(new SendMessageRequest
-                {
-                    QueueUrl = queueUrl,
-                    MessageBody = body
-                });
-
-                Console.WriteLine($"[SQS] Evento {eventType} publicado para usuário {userId}");
+                await outboxRepository.EnqueueAsync(outbox, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                // Não falha a operação principal se a publicação SQS falhar
-                Console.WriteLine($"[SQS] Erro ao publicar evento {eventType}: {ex.Message}");
+                Console.WriteLine($"[Outbox] Erro ao enfileirar evento {eventType}: {ex.Message}");
             }
-        }
-
-        private string? GetQueueUrl()
-        {
-            // Primeiro tenta env var (K8s ConfigMap/Secret)
-            var queueUrl = Environment.GetEnvironmentVariable("USERS_EVENTS_QUEUE_URL");
-            if (!string.IsNullOrEmpty(queueUrl)) return queueUrl;
-
-            // Depois tenta appsettings (K8s: arquivo montado; Local: arquivo do repo)
-            return _configuration["Sqs:UsersEventsQueueUrl"]
-                ?? _configuration["USERS_EVENTS_QUEUE_URL"];
         }
 
         private AuthenticationTokenDTO GenerateToken(User user)

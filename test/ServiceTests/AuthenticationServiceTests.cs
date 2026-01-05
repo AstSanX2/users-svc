@@ -19,6 +19,7 @@ namespace users_svc.Tests.ServiceTests
         private List<User> _stubUsers = null!;
         private Mock<IUserRepository> _mockUserRepo = null!;
         private Mock<IEventRepository> _mockEventRepo = null!;
+        private Mock<IOutboxRepository> _mockOutboxRepo = null!;
         private Mock<IConfiguration> _mockConfiguration = null!;
         private Mock<IHostEnvironment> _mockEnv = null!;
         private IAuthenticationService _service = null!;
@@ -42,6 +43,7 @@ namespace users_svc.Tests.ServiceTests
         {
             _mockUserRepo = new Mock<IUserRepository>(MockBehavior.Strict);
             _mockEventRepo = new Mock<IEventRepository>(MockBehavior.Strict);
+            _mockOutboxRepo = new Mock<IOutboxRepository>(MockBehavior.Strict);
             _mockConfiguration = new Mock<IConfiguration>();
             _mockEnv = new Mock<IHostEnvironment>();
 
@@ -51,6 +53,10 @@ namespace users_svc.Tests.ServiceTests
             // Setup IEventRepository
             _mockEventRepo
                 .Setup(e => e.AppendEventAsync(It.IsAny<DomainEvent>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            _mockOutboxRepo
+                .Setup(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
 
             // Setup FindOneAsync
@@ -80,6 +86,7 @@ namespace users_svc.Tests.ServiceTests
             _service = new AuthenticationService(
                 _mockUserRepo.Object,
                 _mockEventRepo.Object,
+                _mockOutboxRepo.Object,
                 _mockConfiguration.Object,
                 _mockEnv.Object);
         }
@@ -130,6 +137,9 @@ namespace users_svc.Tests.ServiceTests
                 e.AppendEventAsync(It.Is<DomainEvent>(ev => ev.Type == "UserRegistered"),
                     It.IsAny<CancellationToken>()),
                 Times.Once);
+
+            // Como a fila não está configurada no teste, não deve enfileirar no outbox
+            _mockOutboxRepo.Verify(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact(DisplayName = "Register com DTO inválido deve retornar BadRequest e registrar evento de validação")]
@@ -207,6 +217,8 @@ namespace users_svc.Tests.ServiceTests
                 e.AppendEventAsync(It.Is<DomainEvent>(ev => ev.Type == "UserLoggedIn"),
                     It.IsAny<CancellationToken>()),
                 Times.Once);
+
+            _mockOutboxRepo.Verify(o => o.EnqueueAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Fact(DisplayName = "Login com DTO inválido deve retornar BadRequest e registrar evento")]
