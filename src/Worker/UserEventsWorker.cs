@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace UsersWorker;
@@ -24,6 +25,7 @@ public record IntegrationEventEnvelope(
 
 public class UserEventsWorker : BackgroundService
 {
+    private static readonly ActivitySource ActivitySource = new("users-worker");
     private readonly IMongoDatabase _db;
     private readonly IAmazonSQS _sqs;
     private readonly string _queueUrl;
@@ -160,6 +162,8 @@ public class UserEventsWorker : BackgroundService
         var userId = userIdEl.GetString() ?? "";
         var email = emailEl.GetString() ?? "";
 
+        using var activity = StartConsumerActivity(env, message);
+
         Console.WriteLine($"[UsersWorker] Processando evento {env.Type} para usuário {userId}");
 
         var events = _db.GetCollection<BsonDocument>("Events");
@@ -203,10 +207,38 @@ public class UserEventsWorker : BackgroundService
             case "UserRegistered":
                 await HandleUserRegisteredAsync(userId, email, ct);
                 break;
+            case "NotificationRequested":
+                await HandleNotificationRequestedAsync(env, userId, email, ct);
+                break;
             default:
                 Console.WriteLine($"[UsersWorker] Tipo de evento desconhecido: {env.Type}");
                 break;
         }
+    }
+
+    private static Activity? StartConsumerActivity(IntegrationEventEnvelope env, Message message)
+    {
+        Activity? activity;
+
+        if (!string.IsNullOrWhiteSpace(env.CorrelationId)
+            && ActivityContext.TryParse(env.CorrelationId, null, out var parentContext))
+        {
+            activity = ActivitySource.StartActivity($"{env.Type} consume", ActivityKind.Consumer, parentContext);
+        }
+        else
+        {
+            activity = ActivitySource.StartActivity($"{env.Type} consume", ActivityKind.Consumer);
+        }
+
+        activity?.SetTag("messaging.system", "aws.sqs");
+        activity?.SetTag("messaging.destination", "users-events-queue");
+        activity?.SetTag("messaging.operation", "process");
+        activity?.SetTag("messaging.message_id", message.MessageId);
+        activity?.SetTag("fcg.event_type", env.Type);
+        activity?.SetTag("fcg.source", env.Source);
+        activity?.SetTag("fcg.aggregate_id", env.AggregateId);
+
+        return activity;
     }
 
     private async Task HandleUserLoggedInAsync(string userId, CancellationToken ct)
@@ -228,6 +260,16 @@ public class UserEventsWorker : BackgroundService
         // Lógica de boas-vindas ou notificação pode ser adicionada aqui
         Console.WriteLine($"[UsersWorker] UserRegistered processado: {userId} ({email})");
         await Task.CompletedTask;
+    }
+
+    private static Task HandleNotificationRequestedAsync(IntegrationEventEnvelope env, string userId, string email, CancellationToken ct)
+    {
+        var template = env.Data.TryGetProperty("Template", out var templateEl) && templateEl.ValueKind == JsonValueKind.String
+            ? templateEl.GetString()
+            : null;
+
+        Console.WriteLine($"[UsersWorker] NotificationRequested processado: userId={userId} email={email} template={template ?? "(null)"}");
+        return Task.CompletedTask;
     }
 }
 
