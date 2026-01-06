@@ -19,7 +19,7 @@
   </ItemGroup>
   
   <ItemGroup>
-    <ProjectReference Include="..\src\users-svc.csproj" />
+    <ProjectReference Include="..\src\api\users-svc.csproj" />
   </ItemGroup>
 
 </Project>

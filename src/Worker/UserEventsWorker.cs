@@ -10,7 +10,17 @@ using System.Text.Json;
 
 namespace UsersWorker;
 
-public record UserEventMessage(string EventType, string UserId, string Email, DateTime Timestamp);
+public record IntegrationEventEnvelope(
+    Guid EventId,
+    string Type,
+    DateTime OccurredAt,
+    string Source,
+    string AggregateId,
+    string? CorrelationId,
+    string? CausationId,
+    int Version,
+    JsonElement Data
+);
 
 public class UserEventsWorker : BackgroundService
 {
@@ -33,6 +43,23 @@ public class UserEventsWorker : BackgroundService
             ? interval : 5000;
         _maxMessages = int.TryParse(configuration["Worker:MaxMessages"] ?? configuration["MAX_MESSAGES"], out var max)
             ? max : 10;
+
+        EnsureIdempotencyIndex();
+    }
+
+    private void EnsureIdempotencyIndex()
+    {
+        var events = _db.GetCollection<BsonDocument>("Events");
+        var indexKeys = Builders<BsonDocument>.IndexKeys.Ascending("SqsMessageId");
+        var index = new CreateIndexModel<BsonDocument>(indexKeys, new CreateIndexOptions { Unique = true, Name = "ux_sqsMessageId" });
+        try
+        {
+            events.Indexes.CreateOne(index);
+        }
+        catch
+        {
+            // best-effort
+        }
     }
 
     private static IAmazonSQS CreateSqsClient(IConfiguration configuration)
@@ -116,80 +143,90 @@ public class UserEventsWorker : BackgroundService
 
     private async Task ProcessMessageAsync(Message message, CancellationToken ct)
     {
-        var evt = JsonSerializer.Deserialize<UserEventMessage>(message.Body);
-        if (evt is null)
+        var env = JsonSerializer.Deserialize<IntegrationEventEnvelope>(message.Body, new JsonSerializerOptions
         {
-            Console.WriteLine($"[UsersWorker] Mensagem inválida: {message.Body}");
-            return;
-        }
+            PropertyNameCaseInsensitive = true
+        });
 
-        Console.WriteLine($"[UsersWorker] Processando evento {evt.EventType} para usuário {evt.UserId}");
+        if (env is null)
+            throw new InvalidOperationException("Envelope inválido (null).");
+
+        if (!env.Data.TryGetProperty("UserId", out var userIdEl) || userIdEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.UserId.");
+
+        if (!env.Data.TryGetProperty("Email", out var emailEl) || emailEl.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException("Envelope sem Data.Email.");
+
+        var userId = userIdEl.GetString() ?? "";
+        var email = emailEl.GetString() ?? "";
+
+        Console.WriteLine($"[UsersWorker] Processando evento {env.Type} para usuário {userId}");
 
         var events = _db.GetCollection<BsonDocument>("Events");
 
-        // Idempotência: verifica se já processou este MessageId
-        var existingEvent = await events.Find(
-            Builders<BsonDocument>.Filter.Eq("SqsMessageId", message.MessageId)
-        ).FirstOrDefaultAsync(ct);
-
-        if (existingEvent != null)
-        {
-            Console.WriteLine($"[UsersWorker] Mensagem {message.MessageId} já processada, ignorando");
-            return;
-        }
-
-        // Grava evento processado no MongoDB com MessageId para idempotência
         var doc = new BsonDocument
         {
             { "SqsMessageId", message.MessageId },
-            { "AggregateId", evt.UserId },
-            { "Type", $"{evt.EventType}Processed" },
+            { "AggregateId", userId },
+            { "Type", $"{env.Type}Processed" },
             { "Timestamp", DateTime.UtcNow },
             { "Data", new BsonDocument
                 {
-                    { "OriginalEventType", evt.EventType },
-                    { "UserId", evt.UserId },
-                    { "Email", evt.Email },
-                    { "OriginalTimestamp", evt.Timestamp },
+                    { "EventId", env.EventId.ToString() },
+                    { "OriginalEventType", env.Type },
+                    { "UserId", userId },
+                    { "Email", email },
+                    { "OriginalTimestamp", env.OccurredAt },
+                    { "Source", env.Source },
+                    { "CorrelationId", env.CorrelationId is null ? BsonNull.Value : env.CorrelationId },
                     { "ProcessedAt", DateTime.UtcNow }
                 }
             }
         };
 
-        await events.InsertOneAsync(doc, cancellationToken: ct);
+        try
+        {
+            await events.InsertOneAsync(doc, cancellationToken: ct);
+        }
+        catch (MongoWriteException mw) when (mw.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+        {
+            Console.WriteLine($"[UsersWorker] Mensagem {message.MessageId} já processada (duplicate key), ignorando");
+            return;
+        }
 
         // Lógica adicional baseada no tipo de evento
-        switch (evt.EventType)
+        switch (env.Type)
         {
             case "UserLoggedIn":
-                await HandleUserLoggedInAsync(evt, ct);
+                await HandleUserLoggedInAsync(userId, ct);
                 break;
             case "UserRegistered":
-                await HandleUserRegisteredAsync(evt, ct);
+                await HandleUserRegisteredAsync(userId, email, ct);
                 break;
             default:
-                Console.WriteLine($"[UsersWorker] Tipo de evento desconhecido: {evt.EventType}");
+                Console.WriteLine($"[UsersWorker] Tipo de evento desconhecido: {env.Type}");
                 break;
         }
     }
 
-    private async Task HandleUserLoggedInAsync(UserEventMessage evt, CancellationToken ct)
+    private async Task HandleUserLoggedInAsync(string userId, CancellationToken ct)
     {
         // Atualiza last login do usuário
-        var users = _db.GetCollection<BsonDocument>("Users");
-        if (ObjectId.TryParse(evt.UserId, out var userId))
+        // Collection name deve ser "User" para coincidir com o repositório (nameof(User))
+        var users = _db.GetCollection<BsonDocument>("User");
+        if (ObjectId.TryParse(userId, out var oid))
         {
-            var filter = Builders<BsonDocument>.Filter.Eq("_id", userId);
+            var filter = Builders<BsonDocument>.Filter.Eq("_id", oid);
             var update = Builders<BsonDocument>.Update.Set("LastLoginAt", DateTime.UtcNow);
             await users.UpdateOneAsync(filter, update, cancellationToken: ct);
         }
-        Console.WriteLine($"[UsersWorker] UserLoggedIn processado: {evt.UserId}");
+        Console.WriteLine($"[UsersWorker] UserLoggedIn processado: {userId}");
     }
 
-    private async Task HandleUserRegisteredAsync(UserEventMessage evt, CancellationToken ct)
+    private async Task HandleUserRegisteredAsync(string userId, string email, CancellationToken ct)
     {
         // Lógica de boas-vindas ou notificação pode ser adicionada aqui
-        Console.WriteLine($"[UsersWorker] UserRegistered processado: {evt.UserId} ({evt.Email})");
+        Console.WriteLine($"[UsersWorker] UserRegistered processado: {userId} ({email})");
         await Task.CompletedTask;
     }
 }

@@ -1,122 +1,49 @@
-name: users-ci
+name: CI - Users Service
 
 on:
+  push:
+    branches: [main, master]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch: {}
+    branches: [main, master]
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: '8.0.x'
 
-      - name: Cache NuGet
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
+      - name: Restore dependencies
+        run: dotnet restore UsersSvc.sln
 
-      - name: (Debug) List workspace
+      - name: Build
+        run: dotnet build UsersSvc.sln --configuration Release --no-restore
+
+      - name: Run tests
+        run: dotnet test UsersSvc.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+
+      - name: Build Docker images (no push)
         run: |
-          echo "PWD: $(pwd)"
-          echo "Tree (top 3 levels):"
-          find . -maxdepth 3 -type d -print
+          docker build -f src/api/Dockerfile -t ci/users-api:ci .
+          docker build -f src/Worker/Dockerfile -t ci/users-worker:ci .
 
-      - name: Resolve project paths
-        id: paths
-        run: |
-          set -euo pipefail
-          # API .csproj (preferido): src/users-svc/users-svc.csproj
-          if [ -f "src/users-svc/users-svc.csproj" ]; then
-            API="src/users-svc/users-svc.csproj"
-          else
-            API=$(find . -type f -name "users-svc.csproj" -path "*/src/*" | head -n1 || true)
-          fi
-          if [ -z "${API:-}" ]; then
-            echo "❌ API csproj não encontrado." >&2
-            exit 1
-          fi
-
-          # Tests .csproj (preferido): test/users-svc.Tests/users-svc.Tests.csproj
-          TEST_FOUND="no"
-          if [ -f "test/users-svc.Tests/users-svc.Tests.csproj" ]; then
-            TEST="test/users-svc.Tests/users-svc.Tests.csproj"
-            TEST_FOUND="yes"
-          else
-            TEST=$(find . -type f -name "users-svc.Tests.csproj" -path "*/test/*" | head -n1 || true)
-            if [ -n "${TEST:-}" ]; then
-              TEST_FOUND="yes"
-            fi
-          fi
-
-          echo "api=$API"                >> "$GITHUB_OUTPUT"
-          echo "test=${TEST:-}"          >> "$GITHUB_OUTPUT"
-          echo "test_found=$TEST_FOUND"  >> "$GITHUB_OUTPUT"
-          if [ "$TEST_FOUND" = "yes" ]; then
-            echo "test_dir=$(dirname "$TEST")" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "API:       $API"
-          echo "TEST:      ${TEST:-<none>}"
-          echo "TEST_FOUND ${TEST_FOUND}"
-
-      - name: dotnet --info
-        run: dotnet --info
-
-      - name: Restore (API)
-        run: dotnet restore "${{ steps.paths.outputs.api }}"
-
-      - name: Build (Release, API)
-        run: dotnet build "${{ steps.paths.outputs.api }}" --configuration Release --no-restore
-
-      - name: Restore (Worker)
-        run: |
-          if [ -f "src/Worker/UsersWorker.csproj" ]; then
-            dotnet restore "src/Worker/UsersWorker.csproj"
-          else
-            echo "UsersWorker.csproj não encontrado (ok se repo não tiver worker)."
-          fi
-
-      - name: Build (Release, Worker)
-        run: |
-          if [ -f "src/Worker/UsersWorker.csproj" ]; then
-            dotnet build "src/Worker/UsersWorker.csproj" --configuration Release --no-restore
-          fi
-
-      - name: Restore (Tests)
-        if: ${{ steps.paths.outputs.test_found == 'yes' }}
-        working-directory: ${{ steps.paths.outputs.test_dir }}
-        run: dotnet restore
-
-      - name: Build (Release, Tests)
-        if: ${{ steps.paths.outputs.test_found == 'yes' }}
-        working-directory: ${{ steps.paths.outputs.test_dir }}
-        run: dotnet build --configuration Release --no-restore
-
-      - name: Test (Release)
-        if: ${{ steps.paths.outputs.test_found == 'yes' }}
-        working-directory: ${{ steps.paths.outputs.test_dir }}
-        run: dotnet test --configuration Release --no-build --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test_results.trx"
-
-      - name: Upload Test Artifacts
-        if: ${{ steps.paths.outputs.test_found == 'yes' && always() }}
+      - name: Upload test results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: users-tests-artifacts
-          path: |
-            ${{ steps.paths.outputs.test_dir }}/TestResults/*.trx
-            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.cobertura.xml
-            ${{ steps.paths.outputs.test_dir }}/TestResults/**/coverage.info
+          name: test-results
+          path: '**/TestResults/**/*.trx'
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-reports
+          path: '**/TestResults/**/coverage.cobertura.xml'
+

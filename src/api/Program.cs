@@ -171,12 +171,15 @@ builder.Services.AddSwaggerGen(c =>
 // DI
 // ------------------------------------------------------
 builder.Services.AddScoped<IEventRepository, EventRepository>();
+builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 
 // Seeding/Migrations
 builder.Services.AddHostedService<MongoSeeder>();
+// Outbox publisher (SQS integration events)
+builder.Services.AddHostedService<Application.Services.OutboxPublisherHostedService>();
 
 var app = builder.Build();
 
