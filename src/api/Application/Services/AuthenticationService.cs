@@ -192,9 +192,8 @@ namespace Application.Services
                 if (string.IsNullOrWhiteSpace(queueUrl))
                     return;
 
-                // Preferimos W3C traceparent para permitir encadear API -> SQS -> Worker.
-                // Fallback para TraceId (string) apenas para não perder rastreabilidade básica.
-                var correlationId = Activity.Current?.Id ?? Activity.Current?.TraceId.ToString();
+                // Preferimos W3C traceparent para permitir encadear API -> Outbox -> Worker.
+                var correlationId = Activity.Current?.Id;
                 var env = IntegrationEventEnvelope.Create(
                     type: eventType,
                     source: SourceName,

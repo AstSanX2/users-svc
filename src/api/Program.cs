@@ -13,6 +13,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Diagnostics;
 using System.Text;
+using Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -193,6 +194,7 @@ if (!string.IsNullOrWhiteSpace(otlpEndpoint))
         .ConfigureResource(r => r.AddService(serviceName: "users-api"))
         .WithTracing(t =>
         {
+            t.SetSampler(new AlwaysOnSampler());
             t.AddAspNetCoreInstrumentation();
             t.AddHttpClientInstrumentation();
             t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
@@ -205,6 +207,11 @@ builder.Services.AddHostedService<MongoSeeder>();
 builder.Services.AddHostedService<Application.Services.OutboxPublisherHostedService>();
 
 var app = builder.Build();
+
+if (string.Equals(Environment.GetEnvironmentVariable("FCG_LOG_HTTP_BODIES"), "true", StringComparison.OrdinalIgnoreCase))
+{
+    app.UseMiddleware<HttpBodyLoggingMiddleware>();
+}
 
 // Para funcionar bem atrás de proxy reverso / ingress
 app.UseForwardedHeaders();

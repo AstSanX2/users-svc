@@ -4,12 +4,12 @@ WORKDIR /src
 
 ARG BUILD_CONFIGURATION=Release
 
-COPY src/Worker/UsersWorker.csproj src/Worker/
+COPY src/worker/UsersWorker.csproj src/worker/
 COPY src/api/users-svc.csproj src/api/
-RUN dotnet restore src/Worker/UsersWorker.csproj
+RUN dotnet restore src/worker/UsersWorker.csproj
 
 COPY src/ src/
-RUN dotnet publish src/Worker/UsersWorker.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
+RUN dotnet publish src/worker/UsersWorker.csproj -c $BUILD_CONFIGURATION -o /app /p:UseAppHost=false
 
 # ===== STAGE 2: runtime =====
 # O worker referencia o projeto Web (`users-svc`), então precisa do shared framework `Microsoft.AspNetCore.App`.

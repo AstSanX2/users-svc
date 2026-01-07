@@ -100,6 +100,11 @@ public class UserEventsWorker : BackgroundService
         {
             try
             {
+                using var pollActivity = ActivitySource.StartActivity("sqs receive", ActivityKind.Consumer);
+                pollActivity?.SetTag("messaging.system", "aws.sqs");
+                pollActivity?.SetTag("messaging.destination", "users-events-queue");
+                pollActivity?.SetTag("messaging.operation", "receive");
+
                 var response = await _sqs.ReceiveMessageAsync(new ReceiveMessageRequest
                 {
                     QueueUrl = _queueUrl,
@@ -118,6 +123,7 @@ public class UserEventsWorker : BackgroundService
                 {
                     try
                     {
+                        using var consumeActivity = StartConsumerActivityFromBody(message);
                         await ProcessMessageAsync(message, stoppingToken);
                         await _sqs.DeleteMessageAsync(_queueUrl, message.ReceiptHandle, stoppingToken);
                         Console.WriteLine($"[UsersWorker] Mensagem processada: {message.MessageId}");
@@ -161,8 +167,6 @@ public class UserEventsWorker : BackgroundService
 
         var userId = userIdEl.GetString() ?? "";
         var email = emailEl.GetString() ?? "";
-
-        using var activity = StartConsumerActivity(env, message);
 
         Console.WriteLine($"[UsersWorker] Processando evento {env.Type} para usuário {userId}");
 
@@ -239,6 +243,31 @@ public class UserEventsWorker : BackgroundService
         activity?.SetTag("fcg.aggregate_id", env.AggregateId);
 
         return activity;
+    }
+
+    private static Activity? StartConsumerActivityFromBody(Message message)
+    {
+        try
+        {
+            var env = JsonSerializer.Deserialize<IntegrationEventEnvelope>(message.Body, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            if (env is null)
+                return ActivitySource.StartActivity("sqs message consume", ActivityKind.Consumer);
+
+            return StartConsumerActivity(env, message);
+        }
+        catch
+        {
+            var activity = ActivitySource.StartActivity("sqs message consume", ActivityKind.Consumer);
+            activity?.SetTag("messaging.system", "aws.sqs");
+            activity?.SetTag("messaging.destination", "users-events-queue");
+            activity?.SetTag("messaging.operation", "process");
+            activity?.SetTag("messaging.message_id", message.MessageId);
+            return activity;
+        }
     }
 
     private async Task HandleUserLoggedInAsync(string userId, CancellationToken ct)
