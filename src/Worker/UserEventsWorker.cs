@@ -36,10 +36,14 @@ public class UserEventsWorker : BackgroundService
     {
         _db = db;
         _sqs = CreateSqsClient(configuration);
-        _queueUrl = configuration["Sqs:UsersEventsQueueUrl"]
+        var queueUrl = configuration["Sqs:UsersEventsQueueUrl"]
             ?? configuration["USERS_EVENTS_QUEUE_URL"]
-            ?? Environment.GetEnvironmentVariable("USERS_EVENTS_QUEUE_URL")
-            ?? throw new InvalidOperationException("Users queue URL not found (Sqs:UsersEventsQueueUrl no appsettings ou env USERS_EVENTS_QUEUE_URL).");
+            ?? Environment.GetEnvironmentVariable("USERS_EVENTS_QUEUE_URL");
+
+        if (string.IsNullOrWhiteSpace(queueUrl))
+            throw new InvalidOperationException("Users queue URL not configured (defina Sqs:UsersEventsQueueUrl no appsettings ou a env USERS_EVENTS_QUEUE_URL).");
+
+        _queueUrl = queueUrl;
 
         _pollIntervalMs = int.TryParse(configuration["Worker:PollIntervalMs"] ?? configuration["POLL_INTERVAL_MS"], out var interval)
             ? interval : 5000;
@@ -113,14 +117,18 @@ public class UserEventsWorker : BackgroundService
                     VisibilityTimeout = 60
                 }, stoppingToken);
 
-                if (response.Messages.Count == 0)
+                var messages = response?.Messages;
+                if (messages is null || messages.Count == 0)
                 {
                     await Task.Delay(_pollIntervalMs, stoppingToken);
                     continue;
                 }
 
-                foreach (var message in response.Messages)
+                foreach (var message in messages)
                 {
+                    if (message is null)
+                        continue;
+
                     try
                     {
                         using var consumeActivity = StartConsumerActivityFromBody(message);
@@ -141,7 +149,7 @@ public class UserEventsWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[UsersWorker] Erro no loop: {ex.Message}");
+                Console.WriteLine($"[UsersWorker] Erro no loop: {ex}");
                 await Task.Delay(5000, stoppingToken);
             }
         }
