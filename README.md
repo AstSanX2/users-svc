@@ -48,7 +48,7 @@ dotnet test test/users-svc.Tests.csproj -c Release
 ```
 
 ## Docker
-- `src/Dockerfile` (API)
+- `src/api/Dockerfile` (API)
 - `src/Worker/Dockerfile` (worker)
 - Imagens rodam como **non-root** (`USER app`) e sem `HEALTHCHECK` (probes são do k8s)
 

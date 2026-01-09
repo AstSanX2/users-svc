@@ -9,6 +9,7 @@ namespace Domain.Entities
         [BsonId]
         public ObjectId _id { get; set; } = ObjectId.GenerateNewId();
 
+        [BsonGuidRepresentation(GuidRepresentation.Standard)]
         public Guid EventId { get; set; }
         public string EventType { get; set; } = default!;
         public string Source { get; set; } = default!;

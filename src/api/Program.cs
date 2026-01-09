@@ -9,9 +9,16 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MongoDB.Driver;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using System.Diagnostics;
 using System.Text;
+using Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
+
+Activity.DefaultIdFormat = ActivityIdFormat.W3C;
+Activity.ForceDefaultIdFormat = true;
 
 // ------------------------------------------------------
 // Kestrel otimizado para rodar em container/Kubernetes
@@ -176,12 +183,35 @@ builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthenticationService, AuthenticationService>();
 
+// ------------------------------------------------------
+// Observabilidade (OpenTelemetry -> OTLP). Se OTLP endpoint não estiver setado,
+// mantém o comportamento atual (sem export) e evita ruído no dev.
+// ------------------------------------------------------
+var otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT");
+if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+{
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(r => r.AddService(serviceName: "users-api"))
+        .WithTracing(t =>
+        {
+            t.SetSampler(new AlwaysOnSampler());
+            t.AddAspNetCoreInstrumentation();
+            t.AddHttpClientInstrumentation();
+            t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+        });
+}
+
 // Seeding/Migrations
 builder.Services.AddHostedService<MongoSeeder>();
 // Outbox publisher (SQS integration events)
 builder.Services.AddHostedService<Application.Services.OutboxPublisherHostedService>();
 
 var app = builder.Build();
+
+if (string.Equals(Environment.GetEnvironmentVariable("FCG_LOG_HTTP_BODIES"), "true", StringComparison.OrdinalIgnoreCase))
+{
+    app.UseMiddleware<HttpBodyLoggingMiddleware>();
+}
 
 // Para funcionar bem atrás de proxy reverso / ingress
 app.UseForwardedHeaders();
