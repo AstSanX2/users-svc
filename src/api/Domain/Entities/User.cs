@@ -1,7 +1,9 @@
 ﻿using Domain.Enums;
+using MongoDB.Bson.Serialization.Attributes;
 
 namespace Domain.Entities
 {
+    [BsonIgnoreExtraElements]
     public class User : BaseEntity
     {
         public string Name { get; set; }

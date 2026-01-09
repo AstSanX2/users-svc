@@ -1,8 +1,10 @@
 ﻿using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
 using System.Collections;
 
 namespace Domain.Entities
 {
+    [BsonIgnoreExtraElements]
     public class DomainEvent
     {
         public ObjectId AggregateId { get; set; }
