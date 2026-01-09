@@ -9,7 +9,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "users-svc.Tests", "test\use
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "users-svc", "src\api\users-svc.csproj", "{6DFF4F90-FBC6-4A98-B8F4-4957B439FB4C}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "UsersWorker", "src\worker\UsersWorker.csproj", "{77DE047E-9587-4356-B7A2-52E23212D670}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "UsersWorker", "src\Worker\UsersWorker.csproj", "{77DE047E-9587-4356-B7A2-52E23212D670}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

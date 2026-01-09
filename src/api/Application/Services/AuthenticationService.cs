@@ -88,6 +88,17 @@ namespace Application.Services
                     ["Email"] = registerUserRequest.Email
                 });
 
+            // Notificação (assíncrona) com mínimo impacto: enfileira um evento que o UsersWorker consome.
+            _ = EnqueueIntegrationEventAsync(
+                eventType: "NotificationRequested",
+                aggregateId: result._id.ToString(),
+                data: new Dictionary<string, object?>
+                {
+                    ["UserId"] = result._id.ToString(),
+                    ["Email"] = registerUserRequest.Email,
+                    ["Template"] = "Welcome"
+                });
+
             return ResponseModel<ObjectId>.Ok(result._id);
         }
 
@@ -181,7 +192,8 @@ namespace Application.Services
                 if (string.IsNullOrWhiteSpace(queueUrl))
                     return;
 
-                var correlationId = Activity.Current?.TraceId.ToString();
+                // Preferimos W3C traceparent para permitir encadear API -> Outbox -> Worker.
+                var correlationId = Activity.Current?.Id;
                 var env = IntegrationEventEnvelope.Create(
                     type: eventType,
                     source: SourceName,
